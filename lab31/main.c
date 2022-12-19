@@ -5,20 +5,18 @@
 #include <stdbool.h>
 #include "proxyServer.h"
 
-extern int STOPPED_PROGRAMM;
+extern volatile int STOPPED_PROGRAMM;
 
 void sigIntHandler(int sig){
     STOPPED_PROGRAMM = 1;
 }
-
-extern cache_t cache;
 
 int main(int argc, char **argv){
     if (2 != argc) {
         fprintf(stderr, "Usage: %s listen_port\n", argv[0]);
         return EXIT_SUCCESS;
     }
-
+    //игнорируем сигналы отправленные процессу при отсутсвии или обрыве соединения
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR){
         perror("main: signal error");
         return EXIT_FAILURE;

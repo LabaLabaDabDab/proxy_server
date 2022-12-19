@@ -13,7 +13,7 @@ typedef struct http{                                         //code - ответ
                                                              //headers_size - кол-во заголовков        
     ssize_t response_size;  //размер ответа
     ssize_t response_alloc_size; //кол-во выделенной памяти под ответ
-    struct phr_chunked_decoder decoder; //скомунизжено
+    struct phr_chunked_decoder decoder; //скомунизженно
     char *data; //сами данные
     ssize_t data_size; //размер данных
     char *request; //сам запрос (переходит от клиента)
