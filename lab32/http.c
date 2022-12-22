@@ -273,6 +273,7 @@ void http_read_data(http_t *entry, cache_t *cache) { //читаем данные
         cond_broadcast(&entry->cond, "http_read_data");
         return;
     }
+    
     if (0 == bytes_read) { //если больше нечего читать
         entry->status = SOCK_DONE; //соединение польностью готово
         if (entry->response_type == HTTP_RESPONSE_NONE) { //если неопределенно как получаем данные со страницы
@@ -302,7 +303,7 @@ void http_read_data(http_t *entry, cache_t *cache) { //читаем данные
     memcpy(entry->data + entry->data_size, buf, bytes_read); //копируем считанные данные в http
     entry->data_size += bytes_read;
 
-    int b_no_headers = entry->headers_size == HTTP_NO_HEADERS; //чекаем есть хэдеры или нет 1 - есть 0 - нет 
+    int b_no_headers = entry->headers_size == HTTP_NO_HEADERS; //чекаем есть хэдеры или нет
     if (entry->headers_size == HTTP_NO_HEADERS)
         parse_http_response_headers(entry); 
     if (entry->status == SOCK_ERROR){

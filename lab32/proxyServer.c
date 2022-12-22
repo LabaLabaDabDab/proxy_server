@@ -15,6 +15,9 @@ client_list_t client_list = {.head = NULL, .rwlock = PTHREAD_RWLOCK_INITIALIZER}
 http_list_t http_list = {.head = NULL, .mutex= PTHREAD_MUTEX_INITIALIZER};
 cache_t cache;
 
+pthread_t main_thread;
+int server_sock_fd;
+
 volatile int STOPPED_PROGRAMM = 0;
 
 int parse_port(char *port_str, int *port){
@@ -25,7 +28,7 @@ int parse_port(char *port_str, int *port){
     return 0;
 }
 
-void remove_all_connections(){
+void remove_all_connections(int listen_sockfd){
     rwlock_rdlock(&client_list.rwlock, "remove_all_connections");
     client_t *cur_client = client_list.head;
     while (NULL != cur_client){
@@ -33,7 +36,7 @@ void remove_all_connections(){
         pthread_cancel(cur_client->pthread_client);
         cur_client = next;
     }
-   rwlock_unlock(&client_list.rwlock, "remove_all_connections");
+    rwlock_unlock(&client_list.rwlock, "remove_all_connections");
 
     lock_mutex(&http_list.mutex, "remove_all_connections");
     http_t *cur_http = http_list.head;
@@ -43,6 +46,7 @@ void remove_all_connections(){
         cur_http = next;
     }
     unlock_mutex(&http_list.mutex, "remove_all_connections");
+    close(listen_sockfd);
 }
 
 void client_cancel_handler(void *param){
@@ -62,6 +66,12 @@ void http_cancel_handler(void *param) {
         return;
     }
     remove_http(http, &http_list, &cache);
+    return;
+}
+
+void signal_cancel_handler(void *param) {
+    remove_all_connections(server_sock_fd);
+    cache_destroy(&cache);
     return;
 }
 
@@ -95,11 +105,23 @@ int open_socket(int port){
     return sockfd;
 }
 
-void *client_thread(void *param){
-    
+void *client_thread(void *param){ //поток клиента
     if (NULL == param){
         return NULL;
     }
+
+    int errorCode;
+    sigset_t set, orig;
+    sigemptyset(&set);
+    sigaddset(&set, SIGINT);
+    sigemptyset(&orig);
+    errorCode = pthread_sigmask(SIG_BLOCK, &set, &orig);
+    
+    if(0 != errorCode){
+        print_error("main: pthread_sigmask error", errorCode);
+        return NULL;
+    }
+    
     client_t *client = (client_t *) param;
     pthread_detach(client->pthread_client);
 
@@ -109,15 +131,7 @@ void *client_thread(void *param){
     pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 
     pthread_cleanup_push(client_cancel_handler, client);
-    int errorCode;
-    sigset_t set;
-    sigemptyset(&set);
-    sigaddset(&set, SIGINT);
-    errorCode = pthread_sigmask(SIG_SETMASK, &set, NULL);
-    if(0 != errorCode){
-        print_error("main: pthread_sigmask error", errorCode);
-        return NULL;
-    }
+
     while(!IS_ERROR_OR_DONE_STATUS(client->status)){   
         while (client->status == AWAITING_REQUEST){
             client_read_data(client, &http_list, &cache);
@@ -125,8 +139,9 @@ void *client_thread(void *param){
                 return NULL;
             }
         }
+        
         while (client->status == DOWNLOADING || client->status == GETTING_FROM_CACHE){
-            if(IS_ERROR_OR_DONE_STATUS(client->status)){    //чекаем состояние клиента: если клиент уже закончил получение данных или сломался, то удаляем его
+            if(IS_ERROR_OR_DONE_STATUS(client->status)){
                 return NULL;
             }
 
@@ -154,10 +169,23 @@ void *client_thread(void *param){
     return NULL;
 }
 
-void *http_thread(void *param){
+void *http_thread(void *param){ //поток соединения
     if (NULL == param){
         return NULL;
     }
+
+    int errorCode;
+    sigset_t set, orig;
+    sigemptyset(&set);
+    sigaddset(&set, SIGINT);
+    sigemptyset(&orig);
+    errorCode = pthread_sigmask(SIG_BLOCK, &set, &orig);
+    
+    if(0 != errorCode){
+        print_error("main: pthread_sigmask error", errorCode);
+        return NULL;
+    }
+
     http_t *http = (http_t *) param;
     pthread_detach(http->pthread_http);
 
@@ -165,28 +193,20 @@ void *http_thread(void *param){
 
     pthread_cleanup_push(http_cancel_handler, http);
 
-    int errorCode;
-    sigset_t set;
-    sigemptyset(&set);
-    sigaddset(&set, SIGINT);
-    errorCode = pthread_sigmask(SIG_SETMASK, &set, NULL);
-    if(0 != errorCode){
-        print_error("main: pthread_sigmask error", errorCode);
-        return NULL;
-    }
-
     while(http->status == AWAITING_REQUEST){
         http_send_request(http);
         if(http_check_disconnect(http)){ //чекаем пропало ли соединение по данному запросу
             return NULL;
         }
     }
+
     while (!IS_ERROR_OR_DONE_STATUS(http->status)){
         http_read_data(http, &cache);
         if(http_check_disconnect(http)){ //чекаем пропало ли соединение по данному запросу
             return NULL;
         }
     }
+
     while(1){
         if(http_check_disconnect(http)){ //чекаем пропало ли соединение по данному запросу
             return NULL;
@@ -199,7 +219,55 @@ void *http_thread(void *param){
     return NULL; 
 }
 
+void *signal_handler(void *param){
+    sigset_t mask;
+    int errorCode, signal;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGINT);
+
+    errorCode = sigwait(&mask, &signal);
+    
+    printf("sigwait");
+
+    if (0 != errorCode){
+        print_error("errod: signal_handler: sigwait error", errorCode);
+        return NULL;
+    }
+
+    if (SIGINT == signal){
+        perror("SERVER STOP");
+        STOPPED_PROGRAMM = 1;
+        pthread_cancel(main_thread);
+        return NULL;
+    }
+}
+
 int socks_poll_loop(int server_sockfd){
+    main_thread = pthread_self();
+    server_sock_fd = server_sockfd;
+    int errorCode;
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGINT);
+    errorCode = pthread_sigmask(SIG_BLOCK, &set, NULL);
+
+    if(0 != errorCode){
+        print_error("main: pthread_sigmask error", errorCode);
+        return -1;
+    }
+
+    pthread_t signal_thread;
+    
+    errorCode = pthread_create(&signal_thread, NULL, signal_handler, NULL);
+
+    if (0 != errorCode){
+        print_error("create_client error: Unable to create thread", errorCode);
+        close(server_sockfd);
+        return -1; 
+    }
+
+    pthread_detach(signal_thread);
+
     int all_accepted_clients = 0;
     int  new_connected_client_fd = 0;
 
@@ -207,10 +275,12 @@ int socks_poll_loop(int server_sockfd){
         return -1;
     }
 
+    pthread_cleanup_push(signal_cancel_handler, NULL);
+
     while(!STOPPED_PROGRAMM){
         printf("Listening proxy socket accept new incoming connections...\n");
             
-        new_connected_client_fd = accept(server_sockfd, NULL, NULL);
+        new_connected_client_fd = accept(server_sockfd, NULL, NULL); //принимаем новых клиентов
             
         if(-1 == new_connected_client_fd){
             perror("PROXY ACCEPT ERROR: Error while executing a accept\n");
@@ -221,6 +291,8 @@ int socks_poll_loop(int server_sockfd){
         create_client(&client_list, new_connected_client_fd);
         all_accepted_clients++;
     }            
-    remove_all_connections();
+
+    pthread_cleanup_pop(1);
+
     printf("SERVER HAS STOPPED\n");
 }

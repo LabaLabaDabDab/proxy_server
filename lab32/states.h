@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <pthread.h>
 
-#define BUF_SIZE 4096
+#define BUF_SIZE 10000
 
 #define INFO_LOG 1
 #define ERROR_LOG 1

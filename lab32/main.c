@@ -7,12 +7,6 @@
 #include <pthread.h>
 #include "proxyServer.h"
 
-extern int STOPPED_PROGRAMM;
-
-void sigIntHandler(int sig){
-    STOPPED_PROGRAMM = 1;
-}
-
 extern cache_t cache;
 
 int main(int argc, char **argv){
@@ -27,11 +21,6 @@ int main(int argc, char **argv){
         return EXIT_FAILURE;
     }
 
-    if (signal(SIGINT, sigIntHandler) == SIG_ERR){
-        perror("SERVER STOP");
-        return EXIT_FAILURE;
-    }
-
     int port;
     if (0 != parse_port(argv[1], &port)){
         return EXIT_FAILURE;
@@ -43,6 +32,5 @@ int main(int argc, char **argv){
     }
 
     socks_poll_loop(listen_sockfd);
-    close(listen_sockfd);
     return EXIT_SUCCESS;
 }

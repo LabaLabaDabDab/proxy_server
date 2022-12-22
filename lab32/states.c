@@ -7,7 +7,7 @@
 #include <errno.h>
 #include <stdio.h>
 
-int strings_equal_by_length(const char *str1, size_t len1, const char *str2, size_t len2){ //сравниваем по длине потому что распарсенные не содеражт \0
+int strings_equal_by_length(const char *str1, size_t len1, const char *str2, size_t len2){ //сравниваем по длине потому что распарсенные не содержат \0
     if (len1 != len2) 
         return 0;
     if (NULL == str1 || NULL == str2) 
