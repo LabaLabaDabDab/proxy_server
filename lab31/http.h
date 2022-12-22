@@ -21,6 +21,8 @@ typedef struct http{                                         //code - ответ
     ssize_t request_bytes_written;  //кол-во записанных байт
     char *host, *path; //host - куда обращаться //остальная часть url
     cache_node_t *cache_node; //кэш для ответа
+    int sockfd_copy; //дополнительный сокет под копирку
+    int just_created;
     struct http *prev, *next;
 }http_t;
 

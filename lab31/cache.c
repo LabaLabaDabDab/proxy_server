@@ -16,12 +16,12 @@ void free_cache_entry(cache_node_t *entry) {
     free(entry);
 }
 
-void cache_remove(cache_node_t *entry, cache_t *cache) {
-    int hash_index = hash_init(entry->host);
+void cache_remove(cache_node_t *entry, cache_t *cache) { //уничтожаем данные из кэша
+    int hash_index = hash_init(entry->host);  //вычисляем позицию кэша по запросу
 
-    if (entry == cache->content[hash_index]) {
-        cache->content[hash_index] = entry->next;
-        if (cache->content[hash_index] != NULL){
+    if (entry == cache->content[hash_index]) {  
+        cache->content[hash_index] = entry->next; 
+        if (cache->content[hash_index] != NULL){ //если в списке ещё остались элементы
             cache->content[hash_index]->prev = NULL;
         }
     }
@@ -85,7 +85,8 @@ cache_node_t *cache_find(const char *host, const char *path, cache_t *cache) {
     int hash_index = hash_init(host);
     cache_node_t *cur = cache->content[hash_index];
     while (NULL != cur) {
-        if (STR_EQ(host, cur->host) && STR_EQ(path, cur->path)) break;
+        if (STR_EQ(host, cur->host) && STR_EQ(path, cur->path)) 
+            break;
         cur = cur->next;
     }
     return cur;

@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 
-#define BUF_SIZE 4096
+#define BUF_SIZE 32000
 
 #define GETTING_FROM_CACHE 2 //только для клиента
 #define DOWNLOADING 1

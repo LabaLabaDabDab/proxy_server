@@ -8,8 +8,9 @@
 #define LAB31_CLIENT_H
 
 typedef struct client{
+    int just_created;
     int sockfd, status; //status - состояние клиента
-    cache_node_t *cache_node; //данные который получает клиент
+    cache_node_t *cache_node; //cache который получает клиент
     http_t *http_entry; //запрос клиента
     char *request; //сам запрос
     ssize_t request_size; //размер запроса
@@ -30,7 +31,6 @@ void client_remove(client_t *client, client_list_t *client_list);
 void client_update_http_info(client_t *cur_client);
 void check_finished_writing_to_client(client_t *client);
 void client_spam_error(client_t *client);
-void check_finish_write_to_client(client_t *client);
 
 void client_destroy(client_t *client);
 void client_read_data(client_t *client, http_list_t *http_list, cache_t *cache);

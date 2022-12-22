@@ -30,6 +30,7 @@ http_t *create_http(int sock_fd, char *request, ssize_t request_size, char *host
         return NULL;
     }
     http_add_to_list(new_http, http_list);
+    printf("[%s %s] Connected\n", host, path);
     return new_http;
 }
 
@@ -50,6 +51,8 @@ int http_init(http_t *http, int sockfd, char *request, ssize_t request_size, cha
     http->request_bytes_written = 0;
     http->host = host; 
     http->path = path;
+    http->sockfd_copy = sockfd;
+    http->just_created = 1;
     http->cache_node = NULL;
     return 0;
 }
@@ -76,10 +79,11 @@ int http_open_socket(const char *hostname, int port) { //создаем соке
         close(sock_fd);
         return -1;
     }
-
+    /*
     if (-1 == fcntl(sock_fd, F_SETFL, O_NONBLOCK)) { //ставим не блок статус для дескриптора
         perror("open_http_socket: fcntl error");
     }
+    */
     freeaddrinfo(result); //очищаем данные
 
     return sock_fd;
@@ -235,7 +239,8 @@ void parse_http_response_by_length(http_t *entry, cache_t *cache) {
 void http_read_data(http_t *entry, cache_t *cache) { //читаем данные из запроса
     char buf[BUF_SIZE];
     errno = 0;
-    ssize_t bytes_read = recv(entry->sockfd, buf, BUF_SIZE, MSG_DONTWAIT); //получаем сообщение от сокета соединения
+    ssize_t bytes_read = recv(entry->sockfd, buf, BUF_SIZE, 0); //получаем сообщение от сокета соединения
+    
     if (-1 == bytes_read) {
         if (errno == EWOULDBLOCK) 
             return;
@@ -243,6 +248,7 @@ void http_read_data(http_t *entry, cache_t *cache) { //читаем данные
         http_spam_error(entry);
         return;
     }
+
     if (0 == bytes_read) { //если больше нечего читать
         entry->status = SOCK_DONE; //соединение польностью готово
         if (entry->response_type == HTTP_RESPONSE_NONE) { //если неопределенно как получаем данные со страницы
@@ -255,7 +261,7 @@ void http_read_data(http_t *entry, cache_t *cache) { //читаем данные
     }
 
     if (entry->data_size + bytes_read > entry->response_alloc_size) { //если не хватило место под данные со страницы то перевыделяем память
-        entry->response_alloc_size += BUF_SIZE;
+        entry->response_alloc_size += BUF_SIZE * 64;
         char *check = (char *)realloc(entry->data, entry->response_alloc_size);
         if (NULL == check) {
             perror("http_read_data: Unable to reallocate memory for http data");
@@ -266,14 +272,16 @@ void http_read_data(http_t *entry, cache_t *cache) { //читаем данные
     }
 
     memcpy(entry->data + entry->data_size, buf, bytes_read); //копируем считанные данные в http
+
     entry->data_size += bytes_read;
 
     int b_no_headers = entry->headers_size == HTTP_NO_HEADERS; //чекаем есть хэдеры или нет 1 - есть 0 - нет 
     if (entry->headers_size == HTTP_NO_HEADERS)
-        parse_http_response_headers(entry); 
+        parse_http_response_headers(entry);
+
     if (entry->status == SOCK_ERROR) 
         return;
-
+    
     if (entry->headers_size >= 0) {
         if (entry->response_type == HTTP_RESPONSE_CHUNKED) {  //buf - то что считали на текущей операции.
                                                     //сдвинем на размеры хэдеров
@@ -289,7 +297,7 @@ void http_read_data(http_t *entry, cache_t *cache) { //читаем данные
 }
 
 void http_send_request(http_t *entry) {                 //сдвигаем то что мы уже записали           //размер сдвига
-    ssize_t bytes_written = send(entry->sockfd, entry->request + entry->request_bytes_written, entry->request_size - entry->request_bytes_written, MSG_DONTWAIT);
+    ssize_t bytes_written = send(entry->sockfd, entry->request + entry->request_bytes_written, entry->request_size - entry->request_bytes_written, 0);
     if (0 <= bytes_written)
         entry->request_bytes_written += bytes_written;
     if (entry->request_bytes_written == entry->request_size){
