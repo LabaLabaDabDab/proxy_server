@@ -1,8 +1,8 @@
 #include "proxyServer.h"
 #include "client.h"
 
-client_list_t client_list = {.head = NULL};
-http_list_t http_list = {.head = NULL};
+client_list_t client_list = {.head = NULL, .length = 0};
+http_list_t http_list = {.head = NULL, .length = 0};
 cache_t cache;
 
 volatile int STOPPED_PROGRAMM = 0;
@@ -71,7 +71,6 @@ int socks_poll_loop(int server_sockfd){
     struct pollfd serverFd[SERVERFD_SIZE]; 
     
     int new_connected_client_fd = 0;  //дескриптор нового клиента
-    int all_accepted_clients = 0;  //кол-во принятых клиентов
 
     //каждую итерацию цикла: 0 - прокси, последующие элементы клиенты и запросы
     
@@ -79,8 +78,7 @@ int socks_poll_loop(int server_sockfd){
         serverFd[i].fd = -1;
     }
 
-    serverFd[0].fd = all_accepted_clients >= MAX_NUMBER_OF_CLIENTES ? -1 : server_sockfd; //если кол во подсоединенных клиентов больше назначенного, то мы ставим -1
-                                                                                              // чтобы poll игнорировал новые подключения
+    serverFd[0].fd = server_sockfd;
     serverFd[0].events = POLLIN;  //ставим на чтение(прием новых клиентов)
     
     while(!STOPPED_PROGRAMM){
@@ -96,7 +94,7 @@ int socks_poll_loop(int server_sockfd){
         }
 
         if (0 == poll_status){
-            continue;;
+            continue;
         }
         //смотрим на ошибки у сервера
         //если принятый сокет недоступен       //POLLERR - ошибки в дискприторе      //POLLHUP - "бросили трубку"        //POLLNVAL - файловый дескриптор не открыт
@@ -111,7 +109,11 @@ int socks_poll_loop(int server_sockfd){
             printf("Listening proxy socket accept new incoming connections...\n");
             //poll чекает заблокируется ли акспепт или нет
             //если не заблокируется то вернетeся управление poll (в ревентс POLLIN)
-            new_connected_client_fd = accept(server_sockfd, NULL, NULL);
+
+            struct sockaddr *addr = calloc(1, sizeof(struct sockaddr));
+            socklen_t addrlen = sizeof(struct sockaddr);
+
+            new_connected_client_fd = accept(server_sockfd, addr, &addrlen);
             
             if(-1 == new_connected_client_fd){
                 perror("PROXY ACCEPT ERROR: Error while executing a accept\n");
@@ -119,14 +121,14 @@ int socks_poll_loop(int server_sockfd){
                 break;
             }
             fprintf(stderr, "new client connected\n");
-            create_client(&client_list, new_connected_client_fd);          
+            create_client(&client_list, new_connected_client_fd, addr, addrlen);          
         }
 
-        serverFd[0].fd = all_accepted_clients >= MAX_NUMBER_OF_CLIENTES ? -1 : server_sockfd; //если кол во подсоединенных клиентов больше назначенного, то мы ставим -1
+        serverFd[0].fd = client_list.length >= MAX_NUMBER_OF_CLIENTES ? -1 : server_sockfd; //если кол во подсоединенных клиентов больше назначенного, то мы ставим -1
                                                                                               // чтобы poll игнорировал новые подключения
         serverFd[0].events = POLLIN;  //ставим на чтение(прием новых клиентов)
+        serverFd[0].revents = 0;
 
-        all_accepted_clients = 0;
         //чекаем если что нибудь поменялось
         {
             client_t *cur_client = client_list.head;
@@ -134,13 +136,13 @@ int socks_poll_loop(int server_sockfd){
                 int index = cur_client->sockfd;
                 client_t *next = cur_client->next;
                 if (!cur_client->just_created){
-                    if(serverFd[index].revents & POLLIN && !IS_ERROR_OR_DONE_STATUS(cur_client->status)){ //если клиент ещё не закончил подключение
+                    if((serverFd[index].revents & POLLIN || serverFd[index].revents & POLLHUP) && !IS_ERROR_OR_DONE_STATUS(cur_client->status)){ //если клиент ещё не закончил подключение
                         client_read_data(cur_client, &http_list, &cache); //начинаем считывать данные
                     }
 
                     if (serverFd[index].revents & POLLOUT && ((cur_client->status == DOWNLOADING && cur_client->http_entry->status == DOWNLOADING && cur_client->bytes_written < cur_client->http_entry->data_size) ||
                         (cur_client->status == GETTING_FROM_CACHE && cur_client->bytes_written < cur_client->cache_node->size))){
-                        write_to_client(cur_client);
+                        write_to_client(cur_client, client_list.length);
                     }
                 }
 
@@ -156,24 +158,32 @@ int socks_poll_loop(int server_sockfd){
                 client_update_http_info(cur_client);  //обновляем инфу по клиенту (статус запроса и готовность к получению кэша)
                 check_finished_writing_to_client(cur_client); //чекаем закончил ли клиент запись всех данных по запросу
                 serverFd[index].fd = cur_client->sockfd;    //вставляем декскриптор клиента для отслеживания
-                serverFd[index].events = POLLIN; //ставим на чтение запроса
+                serverFd[index].events = 0; //ставим на чтение запроса
+                serverFd[index].revents = 0;
 
+                if(cur_client->status == AWAITING_REQUEST){
+                    serverFd[index].events = POLLIN;
+                }
+                time_t dif = time(0) - cur_client->last_send_time;
+                if (dif >= 1){
+                    cur_client->cur_allowed_size = MAX_SEND_SIZE / client_list.length;
+                }
                         //если клиент ещё получает данные из кэша или только скачивает их
-                if ((cur_client->status == DOWNLOADING && cur_client->bytes_written < cur_client->http_entry->data_size) ||
-                            (cur_client->status == GETTING_FROM_CACHE && cur_client->bytes_written < cur_client->cache_node->size)) {
+                if (cur_client->cur_allowed_size > 0 && ((cur_client->status == DOWNLOADING && cur_client->bytes_written < cur_client->http_entry->data_size) ||
+                            (cur_client->status == GETTING_FROM_CACHE && cur_client->bytes_written < cur_client->cache_node->size))) {
                     serverFd[index].events |= POLLOUT; //ждем записи
                 }
-                all_accepted_clients++;
+
                 cur_client = next; //переходим к сл клиенту
             }
 
             http_t *cur_http = http_list.head;
-            while (NULL != cur_http) {
+            while (NULL != cur_http){
                 int index = cur_http->sockfd_copy;
                 http_t *next = cur_http->next;
                 if (!cur_http->just_created){
-                    if (serverFd[index].revents & POLLIN && !IS_ERROR_OR_DONE_STATUS(cur_http->status)){
-                        http_read_data(cur_http, &cache);
+                    if ((serverFd[index].revents & POLLIN || serverFd[index].revents & POLLHUP) && !IS_ERROR_OR_DONE_STATUS(cur_http->status)){
+                        http_read_data(cur_http, &cache, http_list.length);
                     }
                     if (serverFd[index].revents & POLLOUT && cur_http->status == AWAITING_REQUEST){
                         http_send_request(cur_http);
@@ -190,10 +200,15 @@ int socks_poll_loop(int server_sockfd){
                 }
 
                 serverFd[index].events = 0; //очищаем от мусора
-
+                serverFd[index].revents = 0;
                 serverFd[index].fd = cur_http->sockfd;
 
-                if (!IS_ERROR_OR_DONE_STATUS(cur_http->status)){  
+                time_t dif = time(0) - cur_http->last_recv_time;
+                if (dif >= 1){
+                    cur_http->cur_allowed_size = MAX_SEND_SIZE / http_list.length;
+                }
+
+                if (cur_http->cur_allowed_size > 0 && cur_http->status == DOWNLOADING){  
                     serverFd[index].events |= POLLIN; //ждем чтение
                 }
                 
@@ -203,6 +218,8 @@ int socks_poll_loop(int server_sockfd){
 
                 cur_http = next;
             }
+            
+            
         }
     }
     remove_all_connections();

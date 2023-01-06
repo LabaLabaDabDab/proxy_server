@@ -3,6 +3,8 @@
 #include "cache.h"
 #include "picohttpparser.h"
 
+#include <time.h>
+
 #define LAB31_HTTP_H
 
 typedef struct http{                                         //code - ответ запроса        is_response_complete - закончен ли ответ или нет (все ли данные пришли?)
@@ -23,10 +25,13 @@ typedef struct http{                                         //code - ответ
     cache_node_t *cache_node; //кэш для ответа
     int sockfd_copy; //дополнительный сокет под копирку
     int just_created;
+    time_t last_recv_time;
+    ssize_t cur_allowed_size;
     struct http *prev, *next;
 }http_t;
 
 typedef struct http_list{
+    size_t length;
     http_t *head;
 }http_list_t;
 
@@ -39,7 +44,7 @@ void http_destroy(http_t *http, cache_t *cache);
 int http_check_disconnect(http_t *http);
 int http_open_socket(const char *hostname, int port);
 
-void http_read_data(http_t *entry, cache_t *cache);
+void http_read_data(http_t *entry, cache_t *cache, size_t length);
 void http_send_request(http_t *entry);
 
 void close_socket(int *sockfd);

@@ -17,6 +17,7 @@ void http_add_to_list(http_t *http, http_list_t *http_list) {
     http_list->head = http;
     if (NULL != http->next) 
         http->next->prev = http;
+    http_list->length++;
 }
 
 http_t *create_http(int sock_fd, char *request, ssize_t request_size, char *host, char *path, http_list_t *http_list) { //создание соединеня по запросу клиента
@@ -54,6 +55,8 @@ int http_init(http_t *http, int sockfd, char *request, ssize_t request_size, cha
     http->sockfd_copy = sockfd;
     http->just_created = 1;
     http->cache_node = NULL;
+    http->cur_allowed_size = 0;
+    http->last_recv_time = 0;
     return 0;
 }
 
@@ -79,11 +82,11 @@ int http_open_socket(const char *hostname, int port) { //создаем соке
         close(sock_fd);
         return -1;
     }
-    /*
+    
     if (-1 == fcntl(sock_fd, F_SETFL, O_NONBLOCK)) { //ставим не блок статус для дескриптора
         perror("open_http_socket: fcntl error");
     }
-    */
+    
     freeaddrinfo(result); //очищаем данные
 
     return sock_fd;
@@ -100,6 +103,7 @@ void http_remove_from_list(http_t *http, http_list_t *http_list) {
         if (NULL != http->next)
             http->next->prev = http->prev;
     }
+    http_list->length--;
 }
 
 void close_socket(int *sockfd){
@@ -236,14 +240,20 @@ void parse_http_response_by_length(http_t *entry, cache_t *cache) {
     }
 }
 
-void http_read_data(http_t *entry, cache_t *cache) { //читаем данные из запроса
+void http_read_data(http_t *entry, cache_t *cache, size_t length) { //читаем данные из запроса
     char buf[BUF_SIZE];
     errno = 0;
-    ssize_t bytes_read = recv(entry->sockfd, buf, BUF_SIZE, 0); //получаем сообщение от сокета соединения
+
+    time_t dif = time(0) - entry->last_recv_time;
+    if (dif >= 1){
+        entry->cur_allowed_size = MAX_SEND_SIZE / length;
+    }
+
+    ssize_t bytes_read = recv(entry->sockfd, buf, MIN(BUF_SIZE, entry->cur_allowed_size), MSG_DONTWAIT); //получаем сообщение от сокета соединения
     
     if (-1 == bytes_read) {
-        if (errno == EWOULDBLOCK) 
-            return;
+        if (errno == EAGAIN) 
+           return;
         perror("http_read_data: Unable to read from http socket");
         http_spam_error(entry);
         return;
@@ -261,7 +271,7 @@ void http_read_data(http_t *entry, cache_t *cache) { //читаем данные
     }
 
     if (entry->data_size + bytes_read > entry->response_alloc_size) { //если не хватило место под данные со страницы то перевыделяем память
-        entry->response_alloc_size += BUF_SIZE * 64;
+        entry->response_alloc_size += BUF_SIZE;
         char *check = (char *)realloc(entry->data, entry->response_alloc_size);
         if (NULL == check) {
             perror("http_read_data: Unable to reallocate memory for http data");
@@ -274,6 +284,8 @@ void http_read_data(http_t *entry, cache_t *cache) { //читаем данные
     memcpy(entry->data + entry->data_size, buf, bytes_read); //копируем считанные данные в http
 
     entry->data_size += bytes_read;
+    entry->cur_allowed_size -= bytes_read;
+    entry->last_recv_time = time(0);
 
     int b_no_headers = entry->headers_size == HTTP_NO_HEADERS; //чекаем есть хэдеры или нет 1 - есть 0 - нет 
     if (entry->headers_size == HTTP_NO_HEADERS)
@@ -297,7 +309,8 @@ void http_read_data(http_t *entry, cache_t *cache) { //читаем данные
 }
 
 void http_send_request(http_t *entry) {                 //сдвигаем то что мы уже записали           //размер сдвига
-    ssize_t bytes_written = send(entry->sockfd, entry->request + entry->request_bytes_written, entry->request_size - entry->request_bytes_written, 0);
+    errno = 0;
+    ssize_t bytes_written = send(entry->sockfd, entry->request + entry->request_bytes_written, entry->request_size - entry->request_bytes_written, MSG_DONTWAIT);
     if (0 <= bytes_written)
         entry->request_bytes_written += bytes_written;
     if (entry->request_bytes_written == entry->request_size){
@@ -307,6 +320,9 @@ void http_send_request(http_t *entry) {                 //сдвигаем то 
         entry->request = NULL;
     }
     if (-1 == bytes_written) {
+        if (errno == EAGAIN){
+            return;
+        }
         perror("http_send_request: unable to write to http socket");
         http_spam_error(entry);
     }

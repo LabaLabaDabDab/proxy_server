@@ -7,6 +7,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <time.h>
 
 void add_client_to_list(client_t *client, client_list_t *client_list){ //вставляем клиента в начало списка
     client->prev = NULL;
@@ -14,9 +15,10 @@ void add_client_to_list(client_t *client, client_list_t *client_list){ //вст�
     client_list->head = client;
     if (NULL != client->next) 
         client->next->prev = client;
+    client_list->length++;
 }
 
-void create_client(client_list_t *client_list, int client_sockfd){ //создание клиента
+void create_client(client_list_t *client_list, int client_sockfd, struct sockaddr *addr, socklen_t addrlen){ //создание клиента
     client_t *new_client;
     new_client = calloc(1, sizeof(client_t));
     if (NULL == new_client){
@@ -24,7 +26,7 @@ void create_client(client_list_t *client_list, int client_sockfd){ //созда�
         close(client_sockfd);
         return;
     }
-    if(-1 == client_init(new_client, client_sockfd)){ 
+    if(-1 == client_init(new_client, client_sockfd, addr, addrlen)){ 
         close(client_sockfd);
         return;
     }
@@ -32,7 +34,7 @@ void create_client(client_list_t *client_list, int client_sockfd){ //созда�
     printf("[%d] Connected\n", client_sockfd);
 }
 
-int client_init(client_t *client, int client_sockfd){ //присваиваем клиенту сокет и статус
+int client_init(client_t *client, int client_sockfd, struct sockaddr *addr, socklen_t addrlen){ //присваиваем клиенту сокет и статус
     client->sockfd = client_sockfd;  //accept вернул сокет подключившегося клиент
     client->status = AWAITING_REQUEST; //ждём запрос
     client->cache_node = NULL;
@@ -42,13 +44,17 @@ int client_init(client_t *client, int client_sockfd){ //присваиваем �
     client->request_size = 0;
     client->request_alloc_size = 0;
     client->just_created = 1;
-    /*
+    client->addr = addr;
+    client->addrlen = addrlen;
+    client->last_send_time = 0;
+    client->cur_allowed_size = MAX_SEND_SIZE;
+    
     if(-1 == fcntl(client_sockfd, F_SETFL, O_NONBLOCK)){ //ставим сокету неблокирующий режим
                                                          //чтобы при обработке данных при чтении или записи не блокировались каждый раз
         perror("client error: fcntl error");
     }
     return 0;
-    */
+    
 }
 
 void client_remove(client_t *client, client_list_t *client_list){   //удаление клиента из листа клиентов
@@ -64,6 +70,7 @@ void client_remove(client_t *client, client_list_t *client_list){   //удале
             client->next->prev = client->prev;
         }
     }
+    client_list->length--;
     printf("[%d] Disconnected\n", client->sockfd);
     client_destroy(client); //уничтожаем клиента
     free(client); //очищаем память под данного клиента
@@ -73,6 +80,8 @@ void client_destroy(client_t *client){
     if(NULL != client->http_entry){   //если у него был запрос
         client->http_entry->clients--;  //то снимаем с этого запроса клиента
     }
+    free(client->addr);
+    client->addr = NULL;
     close(client->sockfd);   //закрываем сокет клиента
 }
 
@@ -228,9 +237,9 @@ void handle_client_request(client_t *client, ssize_t bytes_read, http_list_t *ht
 void client_read_data(client_t *client, http_list_t *http_list, cache_t *cache) { //клиент считывает данные из http соединения в свой кэш
     char buf[BUF_SIZE];
     errno = 0;
-    ssize_t bytes_read = recv(client->sockfd, buf, BUF_SIZE, 0); //получаем сообщение из сокета (возвращаем длину сообщения)
+    ssize_t bytes_read = recv(client->sockfd, buf, BUF_SIZE, MSG_DONTWAIT); //получаем сообщение из сокета (возвращаем длину сообщения)
     if (-1 == bytes_read){ 
-        if (errno == EWOULDBLOCK) //сокет был неблокирующим, но нет ни одного соединения которое можно принять
+        if (errno == EAGAIN) //сокет был неблокирующим, но нет ни одного соединения которое можно принять
             return;
         perror("client_read_data: Unable to read from client socket");
         client_spam_error(client);
@@ -303,7 +312,7 @@ void check_finished_writing_to_client(client_t *client) {
     }
 }
 
-void write_to_client(client_t *client) { //отправляем клиенту то что прочитали из кэша
+void write_to_client(client_t *client, size_t length) { //отправляем клиенту то что прочитали из кэша
     ssize_t offset = client->bytes_written;
     const char *buf = "";
     ssize_t size = 0;
@@ -317,14 +326,21 @@ void write_to_client(client_t *client) { //отправляем клиенту �
         size = client->http_entry->data_size;
     }
 
-    ssize_t bytes_written = send(client->sockfd, buf + offset, size - offset, 0); 
-    if (-1 == bytes_written) {
+    time_t dif = time(0) - client->last_send_time;
+    if (dif >= 1){
+        client->cur_allowed_size = MAX_SEND_SIZE / length;
+    }
+
+    ssize_t bytes_written = sendto(client->sockfd, buf + offset, MIN(size - offset, client->cur_allowed_size), MSG_DONTWAIT, client->addr, client->addrlen);
+    if (-1 == bytes_written){
         if (errno == EAGAIN) //мало ли прошёл блокирующий сокет...
             return;
         perror("write_to_client: Unable to write to client socket");
         client_spam_error(client);
         return;
     }
+    client->last_send_time = time(0);
+    client->cur_allowed_size -= bytes_written;
     client->bytes_written += bytes_written;
 
     check_finished_writing_to_client(client);
