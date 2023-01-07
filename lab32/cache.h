@@ -5,7 +5,7 @@
 
 #define LAB31_CACHE_H
 
-#define CACHE_SIZE 64
+#define CACHE_SIZE 128
 
 typedef struct cache_node{
     int is_full;

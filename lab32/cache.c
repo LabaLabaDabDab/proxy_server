@@ -71,6 +71,7 @@ void cache_destroy(cache_t *cache){
 
 cache_node_t *cache_add(char *host, char *path, char *data, ssize_t size, cache_t *cache) {
     cache_node_t *node = (cache_node_t *)malloc(sizeof(cache_node_t));
+    
     if (NULL == node) {
         perror("cache_add: unable to allocate memory for cache entry");
         return NULL;
@@ -102,7 +103,8 @@ cache_node_t *cache_find(const char *host, const char *path, cache_t *cache) {
 
     cache_node_t *cur = cache->content[hash_index];
     while (NULL != cur) {
-        if (STR_EQ(host, cur->host) && STR_EQ(path, cur->path)) break;
+        if (STR_EQ(host, cur->host) && STR_EQ(path, cur->path)) 
+            break;
         cur = cur->next;
     }
 

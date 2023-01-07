@@ -18,6 +18,7 @@ void http_add_to_list(http_t *http, http_list_t *http_list) {
     http_list->head = http;
     if (NULL != http->next) 
         http->next->prev = http;
+    http_list->length++;
 }
 
 http_t *create_http(int sock_fd, char *request, ssize_t request_size, char *host, char *path, http_list_t *http_list) { //создание соединеня по запросу клиента
@@ -45,15 +46,22 @@ http_t *create_http(int sock_fd, char *request, ssize_t request_size, char *host
 }
 
 int http_init(http_t *http, int sockfd, char *request, ssize_t request_size, char *host, char *path) { //инциализируем соединение
+    if (-1 == sem_init(&http->sem, 0, 0)){
+        perror("Unable to sem_init");
+        return -1;
+    }
+
     int errorCode = pthread_mutex_init(&http->mutex, NULL);
     if (0 != errorCode){
         print_error("http_init: Unable to init mutex", errorCode);
+        sem_destroy(&http->sem);
         return -1;
     }
     errorCode = pthread_cond_init(&http->cond, NULL);
     if (0 != errorCode){
         print_error("http_init: Unable to init cond", errorCode);
         pthread_mutex_destroy(&http->mutex);
+        sem_destroy(&http->sem);
         return -1;
     }
     http->status = AWAITING_REQUEST;
@@ -73,6 +81,8 @@ int http_init(http_t *http, int sockfd, char *request, ssize_t request_size, cha
     http->host = host; 
     http->path = path;
     http->cache_node = NULL;
+    http->cur_allowed_size = 0;
+    http->last_recv_time = 0;
     return 0;
 }
 
@@ -116,6 +126,7 @@ void http_remove_from_list(http_t *http, http_list_t *http_list) {
         if (NULL != http->next)
             http->next->prev = http->prev;
     }
+    http_list->length--;
     unlock_mutex(&http_list->mutex, "http_remove_from_list");
 }
 
@@ -157,6 +168,7 @@ void http_destroy(http_t *http, cache_t *cache){ //уничтожаем запр
 
     pthread_mutex_destroy(&http->mutex);
     pthread_cond_destroy(&http->cond);
+    sem_destroy(&http->sem);
 
     close_socket(&http->sockfd); 
 }
@@ -261,9 +273,15 @@ void parse_http_response_by_length(http_t *entry, cache_t *cache) {
     }
 }
 
-void http_read_data(http_t *entry, cache_t *cache) { //читаем данные из запроса
+void http_read_data(http_t *entry, cache_t *cache, size_t length) { //читаем данные из запроса
     char buf[BUF_SIZE];
-    ssize_t bytes_read = recv(entry->sockfd, buf, BUF_SIZE, 0); //получаем сообщение от сокета соединения
+
+    time_t dif = time(0) - entry->last_recv_time;
+    if (dif >= 1){
+        entry->cur_allowed_size = MAX_SEND_SIZE / length;
+    }
+
+    ssize_t bytes_read = recv(entry->sockfd, buf, MIN(BUF_SIZE, entry->cur_allowed_size), 0); //получаем сообщение от сокета соединения
 
     lock_mutex(&entry->mutex, "http_read_data");
     if (-1 == bytes_read) {
@@ -302,6 +320,8 @@ void http_read_data(http_t *entry, cache_t *cache) { //читаем данные
 
     memcpy(entry->data + entry->data_size, buf, bytes_read); //копируем считанные данные в http
     entry->data_size += bytes_read;
+    entry->cur_allowed_size -= bytes_read;
+    entry->last_recv_time = time(0);
 
     int b_no_headers = entry->headers_size == HTTP_NO_HEADERS; //чекаем есть хэдеры или нет
     if (entry->headers_size == HTTP_NO_HEADERS)

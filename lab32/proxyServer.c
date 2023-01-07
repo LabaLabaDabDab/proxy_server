@@ -11,8 +11,8 @@
 #include <sys/signal.h>
 #include <errno.h>
 
-client_list_t client_list = {.head = NULL, .rwlock = PTHREAD_RWLOCK_INITIALIZER};
-http_list_t http_list = {.head = NULL, .mutex= PTHREAD_MUTEX_INITIALIZER};
+client_list_t client_list = {.head = NULL, .rwlock = PTHREAD_RWLOCK_INITIALIZER, .length = 0};
+http_list_t http_list = {.head = NULL, .mutex= PTHREAD_MUTEX_INITIALIZER, .length = 0};
 cache_t cache;
 
 pthread_t main_thread;
@@ -162,7 +162,26 @@ void *client_thread(void *param){ //поток клиента
                 }
                 else break;
             }
-            write_to_client(client);
+            if(client->cur_allowed_size <= 0){
+                //sleep(1);
+                /*
+                struct timespec t;
+                t.tv_sec = 1;
+                t.tv_nsec = 0;
+                sem_timedwait(&client->sem, &t);
+                */
+                struct timeval t;
+                t.tv_sec = 1;
+                t.tv_usec = 0;
+                select(0, NULL, NULL, NULL, &t);  
+            }
+
+            rwlock_rdlock(&client_list.rwlock, "client_thread");
+            size_t length = client_list.length;
+            rwlock_unlock(&client_list.rwlock, "client_thread");
+
+            write_to_client(client, length);
+            
         }
     }
     pthread_cleanup_pop(1); 
@@ -201,7 +220,20 @@ void *http_thread(void *param){ //поток соединения
     }
 
     while (!IS_ERROR_OR_DONE_STATUS(http->status)){
-        http_read_data(http, &cache);
+        if(http->cur_allowed_size <= 0 ){
+            //sleep(1);
+            
+            struct timeval t;
+            t.tv_sec = 1;
+            t.tv_usec = 0;
+            //sem_timedwait(&http->sem, &t);
+            select(0, NULL, NULL, NULL, &t);            
+        }
+        lock_mutex(&http_list.mutex, "http_thread");
+        size_t length = http_list.length;
+        unlock_mutex(&http_list.mutex, "http_thread");
+
+        http_read_data(http, &cache, length);
         if(http_check_disconnect(http)){ //чекаем пропало ли соединение по данному запросу
             return NULL;
         }
@@ -268,8 +300,7 @@ int socks_poll_loop(int server_sockfd){
 
     pthread_detach(signal_thread);
 
-    int all_accepted_clients = 0;
-    int  new_connected_client_fd = 0;
+    int new_connected_client_fd = 0;
 
     if (0 != cache_init(&cache)){
         return -1;
@@ -289,7 +320,6 @@ int socks_poll_loop(int server_sockfd){
         }
         fprintf(stderr, "new client connected\n");
         create_client(&client_list, new_connected_client_fd);
-        all_accepted_clients++;
     }            
 
     pthread_cleanup_pop(1);

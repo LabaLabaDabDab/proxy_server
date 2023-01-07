@@ -5,7 +5,7 @@
 
 #define LAB31_SERVERSOCKER_H
 
-#define MAX_NUMBER_OF_CLIENTES 50
+#define MAX_NUMBER_OF_CLIENTES 1024
 
 int parse_port(char *port_str, int *port);
 int open_socket(int port);

@@ -19,7 +19,7 @@ void add_client_to_list(client_t *client, client_list_t *client_list){ //вст�
     client_list->head = client;
     if (NULL != client->next) 
         client->next->prev = client;
-        
+    client_list->length++;    
     rwlock_unlock(&client_list->rwlock, "add_client_to_list");
 }
 
@@ -56,6 +56,13 @@ int client_init(client_t *client, int client_sockfd){ //присваиваем �
     client->request = NULL;
     client->request_size = 0;
     client->request_alloc_size = 0;
+    client->last_send_time = 0;
+    client->cur_allowed_size = MAX_SEND_SIZE;
+
+    if (-1 == sem_init(&client->sem, 0, 0)){
+        perror("Unable to sem_init");
+        return -1;
+    }
     return 0;
 }
 
@@ -74,6 +81,7 @@ void client_remove(client_t *client, client_list_t *client_list){   //удале
             client->next->prev = client->prev;
         }
     }
+    client_list->length--;
     rwlock_unlock(&client_list->rwlock, "client_remove");
 
     printf("[%d] Disconnected\n", client->sockfd);
@@ -88,6 +96,7 @@ void client_destroy(client_t *client){
         unlock_mutex(&client->http_entry->mutex, "client_destroy");
         cond_broadcast(&client->http_entry->cond, "client_destroy");
     }
+    sem_destroy(&client->sem);
     close(client->sockfd);   //закрываем сокет клиента
 }
 
@@ -132,7 +141,7 @@ int parse_client_request(client_t *client, char **host, char **path, ssize_t byt
     size_t method_len, path_len; //длина метода, длина ресура в ссылке
     int minor_version;
     struct phr_header headers[100];     //заголовки на страницы
-    size_t num_headers = 100;  //длина хэдеров
+    size_t num_headers = 100;  //кол-во хэдеров
 
     int errorCode = phr_parse_request(client->request, client->request_size, &method, &method_len, &phr_path, &path_len, &minor_version, headers, &num_headers, client->request_size - bytes_read);
     if (-1 == errorCode){
@@ -140,6 +149,7 @@ int parse_client_request(client_t *client, char **host, char **path, ssize_t byt
         client_spam_error(client);
         return -1;
     }
+
     if (-2 == errorCode) 
         return -2; //неполный запрос
 
@@ -209,7 +219,7 @@ void handle_client_request(client_t *client, ssize_t bytes_read, http_list_t *ht
         return;
     }
     
-    lock_mutex(&http_list->mutex, "handle_client_request");
+    lock_mutex(&http_list->mutex, "handle_client_request"); //блокируем посл манипуляции пока не создадим соединение (избавился от случая "одинаковых" клиентов)
 
     http_t *http_entry = http_list->head; //если его ещё нет в кеше
     while (NULL != http_entry) {    //пытаемся найти существующее соединение которое мб у нас есть
@@ -220,6 +230,8 @@ void handle_client_request(client_t *client, ssize_t bytes_read, http_list_t *ht
             unlock_mutex(&http_entry->mutex, "handle_client_request");
             client->request_size = 0;
             free(client->request);
+            free(host); 
+            free(path);
             client->request = NULL;
             break;
         }
@@ -261,11 +273,13 @@ void client_read_data(client_t *client, http_list_t *http_list, cache_t *cache) 
     char buf[BUF_SIZE];
     errno = 0;
     ssize_t bytes_read = recv(client->sockfd, buf, BUF_SIZE, 0);
+
     if (-1 == bytes_read){
         perror("client_read_data: Unable to read from client socket");
         client_spam_error(client);
         return;
     }
+
     if (bytes_read == 0) {  //если соединения по этому клиенту закрылось (больше нет принятый данных)
         client->status = SOCK_DONE; //ставим статус "закончил"
         client->request_size = 0;
@@ -295,12 +309,12 @@ void check_finished_writing_to_client(client_t *client) {
     size_t size = 0;
     int is_complete = 0;
     if (client->status == GETTING_FROM_CACHE){ //если клиент получает данные из кэша запроса
-        size = client->cache_node->size; //берем кэш из клиента
+        size = client->cache_node->size; 
         is_complete = client->cache_node->is_full;
     } 
     else if (client->status == DOWNLOADING){
         lock_mutex(&client->http_entry->mutex, "check_finished_writing_to_client"); 
-        size = client->http_entry->data_size; //если скачивает, то берем кэш-данные из его запроса
+        size = client->http_entry->data_size; //если скачивает, то берем данные из его запроса
         is_complete = client->http_entry->is_response_complete;
         unlock_mutex(&client->http_entry->mutex, "check_finished_writing_to_client");
     }
@@ -321,8 +335,7 @@ void check_finished_writing_to_client(client_t *client) {
     }
 }
 
-void write_to_client(client_t *client) { //отправляем клиенту то что прочитали из кэша
-
+void write_to_client(client_t *client, size_t length) { //отправляем клиенту то что прочитали из кэша
     ssize_t offset = client->bytes_written;
     const char *buf = "";
     ssize_t size = 0;
@@ -338,14 +351,21 @@ void write_to_client(client_t *client) { //отправляем клиенту �
         unlock_mutex(&client->http_entry->mutex, "write_to_client");
     }
 
-    ssize_t bytes_written = send(client->sockfd, buf + offset, size - offset, 0); 
+    time_t dif = time(0) - client->last_send_time;
+    if (dif >= 1){
+        client->cur_allowed_size = MAX_SEND_SIZE / length;
+    }
+
+    ssize_t bytes_written = send(client->sockfd, buf + offset, MIN(size - offset, client->cur_allowed_size), 0); 
     if (bytes_written == -1) {
         perror("write_to_client: Unable to write to client socket");
         client_spam_error(client);
         return;
     }
     
+    client->last_send_time = time(0);
+    client->cur_allowed_size -= bytes_written;
     client->bytes_written += bytes_written;
-
+    
     check_finished_writing_to_client(client);
 }

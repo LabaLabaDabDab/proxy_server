@@ -4,6 +4,7 @@
 #include "http.h"
 #include "states.h"
 #include "picohttpparser.h"
+#include <semaphore.h>
 
 #include <pthread.h>
 
@@ -11,6 +12,9 @@
 
 typedef struct client{
     pthread_t pthread_client;
+    sem_t sem;
+    ssize_t cur_allowed_size;
+    time_t last_send_time;
     int sockfd, status; //status - состояние клиента
     cache_node_t *cache_node; //данные который получает клиент
     http_t *http_entry; //запрос клиента
@@ -22,6 +26,7 @@ typedef struct client{
 } client_t;
 
 typedef struct client_list{
+    size_t length;
     client_t *head;
     pthread_rwlock_t rwlock;    
 } client_list_t;
@@ -39,6 +44,6 @@ void check_finish_write_to_client(client_t *client);
 
 void client_destroy(client_t *client);
 void client_read_data(client_t *client, http_list_t *http_list, cache_t *cache);
-void write_to_client(client_t *client);
+void write_to_client(client_t *client, size_t length);
 
 #endif //LAB31_CLIENT_H

@@ -20,8 +20,11 @@
 #define IS_ERROR_OR_DONE_STATUS(STATUS) ((STATUS) < 0)
 #define IS_ERROR_STATUS(STATUS) ((STATUS) == SOCK_ERROR)
 #define STR_EQ(STR1, STR2) (strcmp(STR1, STR2) == 0)
+#define MIN(A, B) ((A) < (B) ? (A) : (B))
 
 #define HTTP_NO_HEADERS (-1)
+
+#define MAX_SEND_SIZE 1024 * 1024 * 200
 
 #define HTTP_CODE_UNDEFINED (-1)
 #define HTTP_CODE_NONE 0
