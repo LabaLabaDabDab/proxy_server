@@ -11,8 +11,6 @@
 #define LAB31_CLIENT_H
 
 typedef struct client{
-    struct sockaddr *addr; 
-    socklen_t addrlen;
     time_t last_send_time;
     int just_created;
     ssize_t cur_allowed_size;
@@ -31,8 +29,8 @@ typedef struct client_list{
     client_t *head;    
 } client_list_t;
 
-void create_client(client_list_t *client_list, int client_sockfd, struct sockaddr *addr, socklen_t addrlen);
-int client_init(client_t *client, int client_sockfd, struct sockaddr *addr, socklen_t addrlen);
+void create_client(client_list_t *client_list, int client_sockfd);
+int client_init(client_t *client, int client_sockfd);
 void client_add_to_list(client_t *client, client_list_t *client_list);
 void client_remove(client_t *client, client_list_t *client_list);
 

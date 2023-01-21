@@ -18,7 +18,7 @@ void add_client_to_list(client_t *client, client_list_t *client_list){ //вст�
     client_list->length++;
 }
 
-void create_client(client_list_t *client_list, int client_sockfd, struct sockaddr *addr, socklen_t addrlen){ //создание клиента
+void create_client(client_list_t *client_list, int client_sockfd){ //создание клиента
     client_t *new_client;
     new_client = calloc(1, sizeof(client_t));
     if (NULL == new_client){
@@ -26,7 +26,7 @@ void create_client(client_list_t *client_list, int client_sockfd, struct sockadd
         close(client_sockfd);
         return;
     }
-    if(-1 == client_init(new_client, client_sockfd, addr, addrlen)){ 
+    if(-1 == client_init(new_client, client_sockfd)){ 
         close(client_sockfd);
         return;
     }
@@ -34,7 +34,7 @@ void create_client(client_list_t *client_list, int client_sockfd, struct sockadd
     printf("[%d] Connected\n", client_sockfd);
 }
 
-int client_init(client_t *client, int client_sockfd, struct sockaddr *addr, socklen_t addrlen){ //присваиваем клиенту сокет и статус
+int client_init(client_t *client, int client_sockfd){ //присваиваем клиенту сокет и статус
     client->sockfd = client_sockfd;  //accept вернул сокет подключившегося клиент
     client->status = AWAITING_REQUEST; //ждём запрос
     client->cache_node = NULL;
@@ -44,8 +44,6 @@ int client_init(client_t *client, int client_sockfd, struct sockaddr *addr, sock
     client->request_size = 0;
     client->request_alloc_size = 0;
     client->just_created = 1;
-    client->addr = addr;
-    client->addrlen = addrlen;
     client->last_send_time = 0;
     client->cur_allowed_size = MAX_SEND_SIZE;
     
@@ -80,8 +78,6 @@ void client_destroy(client_t *client){
     if(NULL != client->http_entry){   //если у него был запрос
         client->http_entry->clients--;  //то снимаем с этого запроса клиента
     }
-    free(client->addr);
-    client->addr = NULL;
     close(client->sockfd);   //закрываем сокет клиента
 }
 
@@ -331,7 +327,7 @@ void write_to_client(client_t *client, size_t length) { //отправляем �
         client->cur_allowed_size = MAX_SEND_SIZE / length;
     }
 
-    ssize_t bytes_written = sendto(client->sockfd, buf + offset, MIN(size - offset, client->cur_allowed_size), MSG_DONTWAIT, client->addr, client->addrlen);
+    ssize_t bytes_written = send(client->sockfd, buf + offset, MIN(size - offset, client->cur_allowed_size), MSG_DONTWAIT);
     if (-1 == bytes_written){
         if (errno == EAGAIN) //мало ли прошёл блокирующий сокет...
             return;

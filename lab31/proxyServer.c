@@ -110,18 +110,14 @@ int socks_poll_loop(int server_sockfd){
             //poll чекает заблокируется ли акспепт или нет
             //если не заблокируется то вернетeся управление poll (в ревентс POLLIN)
 
-            struct sockaddr *addr = calloc(1, sizeof(struct sockaddr));
-            socklen_t addrlen = sizeof(struct sockaddr);
-
-            new_connected_client_fd = accept(server_sockfd, addr, &addrlen);
-            
+            new_connected_client_fd = accept(server_sockfd, NULL, NULL);
             if(-1 == new_connected_client_fd){
                 perror("PROXY ACCEPT ERROR: Error while executing a accept\n");
                 printf("SERVER HAS STOPPED\n");
                 break;
             }
             fprintf(stderr, "new client connected\n");
-            create_client(&client_list, new_connected_client_fd, addr, addrlen);          
+            create_client(&client_list, new_connected_client_fd);          
         }
 
         serverFd[0].fd = client_list.length >= MAX_NUMBER_OF_CLIENTES ? -1 : server_sockfd; //если кол во подсоединенных клиентов больше назначенного, то мы ставим -1
@@ -165,6 +161,7 @@ int socks_poll_loop(int server_sockfd){
                     serverFd[index].events = POLLIN;
                 }
                 time_t dif = time(0) - cur_client->last_send_time;
+                
                 if (dif >= 1){
                     cur_client->cur_allowed_size = MAX_SEND_SIZE / client_list.length;
                 }
