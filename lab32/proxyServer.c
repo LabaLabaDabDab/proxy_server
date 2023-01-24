@@ -128,9 +128,11 @@ void *client_thread(void *param){ //поток клиента
     add_client_to_list(client, &client_list); //добавляем в лист клиентов
     printf("[%d] Connected\n", client->sockfd);
 
-    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
 
     pthread_cleanup_push(client_cancel_handler, client);
+
+    pthread_testcancel();
 
     while(!IS_ERROR_OR_DONE_STATUS(client->status)){   
         while (client->status == AWAITING_REQUEST){
@@ -139,8 +141,11 @@ void *client_thread(void *param){ //поток клиента
                 return NULL;
             }
         }
+
+        pthread_testcancel();
         
         while (client->status == DOWNLOADING || client->status == GETTING_FROM_CACHE){
+            pthread_testcancel();
             if(IS_ERROR_OR_DONE_STATUS(client->status)){
                 return NULL;
             }
@@ -150,6 +155,7 @@ void *client_thread(void *param){ //поток клиента
                 client_update_http_info(client);  //обновляем инфу по клиенту (статус запроса и готовность к получению кэша)
                 check_finished_writing_to_client(client); //чекаем закончил ли клиент запись всех данных по запросу
                 if(client->status == DOWNLOADING){
+                    pthread_testcancel();
                     lock_mutex(&client->http_entry->mutex, "client_thread");
                     if(client->bytes_written == client->http_entry->data_size){
                         cond_wait(&client->http_entry->mutex, &client->http_entry->cond, "client_thread");
@@ -189,11 +195,14 @@ void *http_thread(void *param){ //поток соединения
     http_t *http = (http_t *) param;
     pthread_detach(http->pthread_http);
 
-    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
 
     pthread_cleanup_push(http_cancel_handler, http);
 
+    pthread_testcancel();
+
     while(http->status == AWAITING_REQUEST){
+        pthread_testcancel();
         http_send_request(http);
         if(http_check_disconnect(http)){ //чекаем пропало ли соединение по данному запросу
             return NULL;
@@ -201,6 +210,7 @@ void *http_thread(void *param){ //поток соединения
     }
 
     while (!IS_ERROR_OR_DONE_STATUS(http->status)){
+        pthread_testcancel();
         http_read_data(http, &cache);
         if(http_check_disconnect(http)){ //чекаем пропало ли соединение по данному запросу
             return NULL;
@@ -208,6 +218,7 @@ void *http_thread(void *param){ //поток соединения
     }
 
     while(1){
+        pthread_testcancel();
         if(http_check_disconnect(http)){ //чекаем пропало ли соединение по данному запросу
             return NULL;
         }
@@ -219,13 +230,14 @@ void *http_thread(void *param){ //поток соединения
     return NULL; 
 }
 
+
 void *signal_handler(void *param){
     sigset_t mask;
-    int errorCode, signal;
+    int errorCode, signal_thread;
     sigemptyset(&mask);
     sigaddset(&mask, SIGINT);
 
-    errorCode = sigwait(&mask, &signal);
+    errorCode = sigwait(&mask, &signal_thread);
     
     printf("sigwait");
 
@@ -234,7 +246,7 @@ void *signal_handler(void *param){
         return NULL;
     }
 
-    if (SIGINT == signal){
+    if (SIGINT == signal_thread){
         perror("SERVER STOP");
         STOPPED_PROGRAMM = 1;
         pthread_cancel(main_thread);

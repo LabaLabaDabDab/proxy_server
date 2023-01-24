@@ -84,9 +84,10 @@ void client_remove(client_t *client, client_list_t *client_list){   //удале
 
 void client_destroy(client_t *client){
     if(NULL != client->http_entry){   //если у него был запрос
-        lock_mutex(&client->http_entry->mutex, "client_destroy");
-        client->http_entry->clients--;  //то снимаем с этого запроса клиента
-        unlock_mutex(&client->http_entry->mutex, "client_destroy");
+        if (0 == lock_mutex(&client->http_entry->mutex, "client_destroy")){
+            client->http_entry->clients--;  //то снимаем с этого запроса клиента
+            unlock_mutex(&client->http_entry->mutex, "client_destroy");
+        }
         cond_broadcast(&client->http_entry->cond, "client_destroy");
     }
     close(client->sockfd);   //закрываем сокет клиента
