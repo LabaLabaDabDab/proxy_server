@@ -72,7 +72,7 @@ void http_cancel_handler(void *param) {
 void signal_cancel_handler(void *param) {
     remove_all_connections(server_sock_fd);
     cache_destroy(&cache);
-    return;
+    exit(-1);
 }
 
 int open_socket(int port){
